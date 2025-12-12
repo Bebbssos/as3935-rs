@@ -26,7 +26,7 @@ impl I2cAddress {
     }
 }
 
-pub(crate) struct I2cInterface<I2C> {
+pub struct I2cInterface<I2C> {
     i2c: I2C,
     address: u8,
 }
@@ -35,7 +35,7 @@ impl<I2C> I2cInterface<I2C>
 where
     I2C: I2c,
 {
-    pub(crate) fn new(i2c: I2C, i2c_address: I2cAddress) -> Result<Self> {
+    pub fn new(i2c: I2C, i2c_address: I2cAddress) -> Result<Self> {
         Ok(Self {
             i2c,
             address: i2c_address.0,

@@ -8,7 +8,7 @@ use std::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
-pub(crate) struct SpiInterface<SPI> {
+pub struct SpiInterface<SPI> {
     spi: SPI,
 }
 
@@ -16,7 +16,7 @@ impl<SPI> SpiInterface<SPI>
 where
     SPI: SpiDevice,
 {
-    pub(crate) fn new(spi: SPI) -> Result<Self> {
+    pub fn new(spi: SPI) -> Result<Self> {
         Ok(Self { spi })
     }
 }
