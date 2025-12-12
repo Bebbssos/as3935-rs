@@ -1,3 +1,78 @@
+//! Platform-agnostic Rust driver for the AS3935 Franklin Lightning Sensor IC.
+//!
+//! This driver is built on top of the [`embedded-hal`] traits, making it compatible
+//! with any platform that implements these traits.
+//!
+//! # Features
+//!
+//! - I²C and SPI communication support
+//! - `no_std` compatible (requires `alloc`)
+//! - Configurable sensor parameters
+//! - Event detection (lightning, noise, disturbances)
+//!
+//! # Examples
+//!
+//! ## Using I²C
+//!
+//! ```no_run
+//! use as3935_bbn::interface::i2c::I2cAddress;
+//! use as3935_bbn::{ListeningParameters, SensorPlacing, AS3935};
+//! # use embedded_hal::i2c::I2c;
+//! # struct MyI2c;
+//! # impl embedded_hal::i2c::ErrorType for MyI2c {
+//! #     type Error = core::convert::Infallible;
+//! # }
+//! # impl I2c for MyI2c {
+//! #     fn transaction(&mut self, _: u8, _: &mut [embedded_hal::i2c::Operation]) -> Result<(), Self::Error> { Ok(()) }
+//! # }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let i2c = MyI2c; // Your platform's I2C implementation
+//! let mut sensor = AS3935::new_i2c(i2c, I2cAddress::default())?;
+//!
+//! sensor.listen(
+//!     ListeningParameters::default()
+//!         .with_sensor_placing(SensorPlacing::Outdoor)
+//! )?;
+//!
+//! // In your interrupt handler or polling loop:
+//! if let Ok(Some(event)) = sensor.check_irq() {
+//!     // Handle the event
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Using SPI
+//!
+//! ```no_run
+//! use as3935_bbn::AS3935;
+//! # use embedded_hal::spi::SpiDevice;
+//! # struct MySpi;
+//! # impl embedded_hal::spi::ErrorType for MySpi {
+//! #     type Error = core::convert::Infallible;
+//! # }
+//! # impl SpiDevice for MySpi {
+//! #     fn transaction(&mut self, _: &mut [embedded_hal::spi::Operation]) -> Result<(), Self::Error> { Ok(()) }
+//! # }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let spi = MySpi; // Your platform's SPI implementation
+//! let mut sensor = AS3935::new_spi(spi)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Interrupt Handling
+//!
+//! Since `embedded-hal` doesn't provide interrupt abstractions, you need to:
+//!
+//! 1. Configure your platform's GPIO to detect rising edges on the IRQ pin
+//! 2. In your interrupt handler, call `sensor.check_irq()` after waiting 2ms
+//! 3. If sharing the sensor between threads, wrap it in `Arc<Mutex<AS3935<_>>>`
+//!
+//! See the `examples/` directory for platform-specific examples.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
