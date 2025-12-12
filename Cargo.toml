@@ -1,10 +1,10 @@
 [package]
 authors = ["mgrouch <mgrushinskiy@gmail.com>"]
-categories = ["embedded", "hardware-support"]
-description = "Fork of Michael Moravec Rust I²C/SPI driver for AS3935 Franklin Lightning Sensor IC"
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Platform-agnostic Rust I²C/SPI driver for AS3935 Franklin Lightning Sensor IC using embedded-hal"
 edition = "2021"
 homepage = "https://github.com/bareboat-necessities/as3935-rs"
-keywords = ["raspberry", "as3935", "i2c", "spi", "lightning"]
+keywords = ["embedded-hal", "as3935", "i2c", "spi", "lightning"]
 license = "MIT"
 name = "as3935-bbn"
 readme = "README.md"
@@ -17,9 +17,14 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 log = "0.4.6"
-rppal = "0.14.1"
+embedded-hal = "1.0"
 
 [dev-dependencies]
 chrono = "0.4.7"
 simple_logger = "1.3.0"
 simple-signal = "1.1.1"
+rppal = { version = "0.22.1", features = ["embedded-hal"] }
+
+[features]
+default = ["std"]
+std = []
