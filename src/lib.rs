@@ -1,6 +1,6 @@
 //! Platform-agnostic Rust driver for the AS3935 Franklin Lightning Sensor IC.
 //!
-//! This driver is built on top of the [`embedded-hal`] traits, making it compatible
+//! This driver is built on top of the `embedded-hal` traits, making it compatible
 //! with any platform that implements these traits.
 //!
 //! # Features
@@ -357,13 +357,16 @@ where
         self.state == State::Listening
     }
 
+    /// Power up the sensor from powered down state
+    /// 
+    /// **Note**: This operation requires a 2ms delay after writing to the register.
+    /// In platform-specific code, users should implement this delay using their
+    /// platform's delay function (e.g., `thread::sleep`, `delay.delay_ms()`, etc.).
     fn power_up(&mut self) -> Result<()> {
         self.assert_state(&self.state, &[State::StandingBy, State::PoweredDown])?;
 
         self.interface.write(Box::new(PowerDown), 0b_0)?;
-        // Note: In embedded environments, users should implement their own delay function
-        // For no_std compatibility, we can't use std::thread::sleep here
-        // The delay is 2ms as per spec
+        // Platform-specific delay of 2ms required here
 
         Ok(())
     }
@@ -374,23 +377,31 @@ where
         Ok(())
     }
 
+    /// Calibrate the sensor's internal oscillators
+    /// 
+    /// **Note**: This operation requires multiple delays:
+    /// - 2ms after sending the calibration command
+    /// - 2ms after setting DISP_TRCO (clock generation delay)  
+    /// - 2ms after clearing DISP_TRCO
+    /// 
+    /// Users must implement these delays in their platform-specific code.
     fn calibrate_clock(&mut self) -> Result<()> {
         self.assert_state(&self.state, &[State::StandingBy, State::PoweredDown])?;
 
         debug!("sending CALIB_RCO direct command");
         self.interface
             .write(Box::new(CalibrateOscillators), 0x96)?;
-        // Need 2ms delay here
+        // Platform-specific delay of 2ms required here
 
         debug!("setting DISP_TRCO=1");
         self.interface
             .write(Box::new(DisplayTrcoOnIrqPin), 0b_1)?;
 
-        // Need CLOCK_GENERATION_DELAY here
+        // Platform-specific delay of 2ms (CLOCK_GENERATION_DELAY) required here
 
         debug!("setting DISP_TRCO=0");
         self.interface.write(Box::new(DisplayTrcoOnIrqPin), 0)?;
-        // Need 2ms delay here
+        // Platform-specific delay of 2ms required here
 
         Ok(())
     }

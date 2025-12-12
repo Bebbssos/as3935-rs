@@ -11,10 +11,18 @@ pub(crate) mod conversion;
 pub mod i2c;
 pub mod spi;
 
-pub const CLOCK_GENERATION_DELAY: Duration = Duration::from_millis(2);
-pub const IRQ_TRIGGER_TO_READY_DELAY: Duration = Duration::from_millis(2);
-pub const LIGHTNING_CALCULATION_DELAY: Duration = Duration::from_millis(2);
+/// Internal timing constant for clock generation delay (2ms)
+#[allow(dead_code)]
+pub(crate) const CLOCK_GENERATION_DELAY: Duration = Duration::from_millis(2);
+/// Internal timing constant for IRQ trigger to ready delay (2ms)
+#[allow(dead_code)]
+pub(crate) const IRQ_TRIGGER_TO_READY_DELAY: Duration = Duration::from_millis(2);
+/// Internal timing constant for lightning calculation delay (2ms)
+#[allow(dead_code)]
+pub(crate) const LIGHTNING_CALCULATION_DELAY: Duration = Duration::from_millis(2);
+/// Recommended minimum time to wait after disturber detection before re-enabling
 pub const DISTURBER_DEACTIVATION_PERIOD: Duration = Duration::from_millis(1500);
+/// Approximate minimum interval between lightning events
 pub const APPROXIMATE_MINIMUM_LIGHTNING_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) type Result<T> = ::core::result::Result<T, Error>;
@@ -54,8 +62,8 @@ pub(crate) trait Interface: Send {
 }
 
 pub(crate) fn calculate_bitshift(mask: u8) -> u8 {
-    for i in 0..7 {
-        if (mask & (1 << i)) == 1 {
+    for i in 0..8 {
+        if (mask & (1 << i)) != 0 {
             return i;
         }
     }
