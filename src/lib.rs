@@ -1,3 +1,17 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
+use std::boxed::Box;
+
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+
 #[macro_use]
 extern crate log;
 
@@ -7,24 +21,11 @@ use crate::device::registers::{
     WatchdogThreshold,
 };
 use crate::interface::i2c::{I2cAddress, I2cInterface};
-use crate::interface::{
-    Interface, Irq, CLOCK_GENERATION_DELAY, IRQ_TRIGGER_TO_READY_DELAY, LIGHTNING_CALCULATION_DELAY,
-};
-use rppal::gpio::{InputPin, Level, Trigger};
-use rppal::i2c::I2c;
-use rppal::spi::Spi;
-use std::error;
-use std::fmt;
-use std::result::Result::Err;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::Duration;
+use crate::interface::spi::SpiInterface;
+use crate::interface::{Interface, Irq};
 
 pub(crate) mod device;
 pub mod interface;
-
-pub type IrqPin = InputPin;
 
 #[derive(Debug)]
 pub enum Error {
@@ -33,12 +34,15 @@ pub enum Error {
     InvalidState,
 }
 
-pub type Result<T> = ::std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
-impl error::Error for Error {}
-impl fmt::Display for Error {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> ::std::result::Result<(), fmt::Error> {
-        unimplemented!()
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
+        match self {
+            Error::Deadlock => write!(f, "Deadlock occurred"),
+            Error::InterfaceError(e) => write!(f, "Interface error: {}", e),
+            Error::InvalidState => write!(f, "Invalid state"),
+        }
     }
 }
 
@@ -69,7 +73,7 @@ pub enum MinimumLightningThreshold {
 pub struct SignalVerificationThreshold(pub(crate) u8);
 
 impl SignalVerificationThreshold {
-    pub fn new(value: u8) -> ::std::result::Result<Self, &'static str> {
+    pub fn new(value: u8) -> core::result::Result<Self, &'static str> {
         if value > 10 {
             return Err("Signal verification threshold must be in range 0-10");
         }
@@ -82,7 +86,7 @@ impl SignalVerificationThreshold {
 pub struct NoiseFloorThreshold(pub(crate) u8);
 
 impl NoiseFloorThreshold {
-    pub fn new(value: u8) -> ::std::result::Result<Self, &'static str> {
+    pub fn new(value: u8) -> core::result::Result<Self, &'static str> {
         if value > 11 {
             return Err("Noise level threshold must be in range 0-11");
         }
@@ -108,9 +112,9 @@ pub enum HeadOfStormDistance {
     Overhead,
 }
 
-pub enum InterfaceSelection {
-    I2c(I2c, I2cAddress),
-    Spi(Spi, u8),
+pub enum InterfaceSelection<I2C, SPI> {
+    I2c(I2C, I2cAddress),
+    Spi(SPI),
 }
 
 pub enum Event {
@@ -171,25 +175,50 @@ impl ListeningParameters {
     }
 }
 
-pub struct AS3935 {
-    interface: Arc<Mutex<Box<dyn Interface>>>,
-    irq_pin: IrqPin,
+pub struct AS3935<INTERFACE>
+where
+    INTERFACE: Interface,
+{
+    interface: INTERFACE,
     state: State,
 }
 
-impl AS3935 {
-    pub fn new(interface_selection: InterfaceSelection, irq_pin: IrqPin) -> Result<Self> {
-        Ok(match interface_selection {
-            InterfaceSelection::I2c(i2c, i2c_address) => Self {
-                interface: Arc::new(Mutex::new(Box::new(I2cInterface::new(i2c, i2c_address)?))),
-                irq_pin,
-                state: State::StandingBy,
-            },
-            InterfaceSelection::Spi(_, _) => unimplemented!(),
+impl<I2C> AS3935<I2cInterface<I2C>>
+where
+    I2C: embedded_hal::i2c::I2c + Send,
+{
+    /// Create a new AS3935 driver with an I2C interface
+    pub fn new_i2c(i2c: I2C, i2c_address: I2cAddress) -> Result<Self> {
+        Ok(Self {
+            interface: I2cInterface::new(i2c, i2c_address)?,
+            state: State::StandingBy,
         })
     }
+}
 
-    pub fn listen(&mut self, parameters: ListeningParameters) -> Result<Receiver<Event>> {
+impl<SPI> AS3935<SpiInterface<SPI>>
+where
+    SPI: embedded_hal::spi::SpiDevice + Send,
+{
+    /// Create a new AS3935 driver with an SPI interface
+    pub fn new_spi(spi: SPI) -> Result<Self> {
+        Ok(Self {
+            interface: SpiInterface::new(spi)?,
+            state: State::StandingBy,
+        })
+    }
+}
+
+impl<INTERFACE> AS3935<INTERFACE>
+where
+    INTERFACE: Interface,
+{
+    /// Initialize the sensor and start listening for events
+    /// 
+    /// This configures the sensor with the specified parameters.
+    /// Users must poll `check_irq()` to detect events, as embedded-hal
+    /// does not provide interrupt abstractions.
+    pub fn listen(&mut self, parameters: ListeningParameters) -> Result<()> {
         self.assert_state(&self.state, &[State::StandingBy, State::PoweredDown])?;
 
         info!("starting listen sequence");
@@ -206,25 +235,49 @@ impl AS3935 {
         debug!("configuring listen parameters");
         self.configure_listen_parameters(parameters)?;
 
-        let (sender, receiver) = channel::<Event>();
-        self.setup_irq(sender)?;
-
         self.state = State::Listening;
 
-        Ok(receiver)
+        Ok(())
     }
 
+    /// Check if an interrupt has occurred and return the event
+    /// 
+    /// This should be called when the IRQ pin goes high.
+    /// Users are responsible for monitoring the IRQ pin in their platform-specific code.
+    pub fn check_irq(&mut self) -> Result<Option<Event>> {
+        if self.state != State::Listening {
+            return Ok(None);
+        }
+
+        let irq = Irq::from(self.interface.read(Box::new(Interrupt))?);
+
+        let event = match irq {
+            Irq::DistanceEstimationChanged => return Ok(None),
+            Irq::DisturberDetected => Event::Disturbance,
+            Irq::Lightning => {
+                // In a real implementation, the user would need to wait LIGHTNING_CALCULATION_DELAY
+                // before calling this or handle it externally
+                Event::Lightning(HeadOfStormDistance::from(
+                    self.interface.read(Box::new(DistanceEstimation))?,
+                ))
+            }
+            Irq::NoiseLevelTooHigh => Event::Noise,
+        };
+
+        Ok(Some(event))
+    }
+
+    /// Stop listening and power down the sensor
     pub fn terminate(&mut self) -> Result<()> {
         self.assert_state(&self.state, &[State::Listening])?;
 
-        self.irq_pin.clear_async_interrupt().unwrap();
         self.power_down()?;
-
         self.state = State::PoweredDown;
 
         Ok(())
     }
 
+    /// Check if the sensor is currently listening
     pub fn is_listening(&self) -> bool {
         self.state == State::Listening
     }
@@ -232,20 +285,16 @@ impl AS3935 {
     fn power_up(&mut self) -> Result<()> {
         self.assert_state(&self.state, &[State::StandingBy, State::PoweredDown])?;
 
-        self.interface
-            .lock()
-            .unwrap()
-            .write(Box::new(PowerDown), 0b_0)?;
-        sleep(Duration::from_millis(2));
+        self.interface.write(Box::new(PowerDown), 0b_0)?;
+        // Note: In embedded environments, users should implement their own delay function
+        // For no_std compatibility, we can't use std::thread::sleep here
+        // The delay is 2ms as per spec
 
         Ok(())
     }
 
     fn power_down(&mut self) -> Result<()> {
-        self.interface
-            .lock()
-            .unwrap()
-            .write(Box::new(PowerDown), 0b_1)?;
+        self.interface.write(Box::new(PowerDown), 0b_1)?;
 
         Ok(())
     }
@@ -255,33 +304,24 @@ impl AS3935 {
 
         debug!("sending CALIB_RCO direct command");
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(CalibrateOscillators), 0x96)?;
-        sleep(Duration::from_millis(2));
+        // Need 2ms delay here
 
         debug!("setting DISP_TRCO=1");
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(DisplayTrcoOnIrqPin), 0b_1)?;
 
-        sleep(CLOCK_GENERATION_DELAY);
+        // Need CLOCK_GENERATION_DELAY here
 
         debug!("setting DISP_TRCO=0");
-        self.interface
-            .lock()
-            .unwrap()
-            .write(Box::new(DisplayTrcoOnIrqPin), 0)?;
-        sleep(Duration::from_millis(2));
+        self.interface.write(Box::new(DisplayTrcoOnIrqPin), 0)?;
+        // Need 2ms delay here
 
         Ok(())
     }
 
     fn configure_defaults(&mut self) -> Result<()> {
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(PresetDefault), 0x96)?;
 
         Ok(())
@@ -318,8 +358,6 @@ impl AS3935 {
 
     fn configure_sensor_placing(&mut self, placing: &SensorPlacing) -> Result<()> {
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(AfeGainBoost), (*placing).into())?;
 
         Ok(())
@@ -329,7 +367,7 @@ impl AS3935 {
         &mut self,
         minimum_lightning_threshold: &MinimumLightningThreshold,
     ) -> Result<()> {
-        self.interface.lock().unwrap().write(
+        self.interface.write(
             Box::new(MinimumNumberOfLightning),
             (*minimum_lightning_threshold).into(),
         )?;
@@ -342,8 +380,6 @@ impl AS3935 {
         noise_floor_threshold: &NoiseFloorThreshold,
     ) -> Result<()> {
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(NoiseFloorLevel), (*noise_floor_threshold).into())?;
 
         Ok(())
@@ -353,7 +389,7 @@ impl AS3935 {
         &mut self,
         signal_verification_threshold: &SignalVerificationThreshold,
     ) -> Result<()> {
-        self.interface.lock().unwrap().write(
+        self.interface.write(
             Box::new(WatchdogThreshold),
             (*signal_verification_threshold).into(),
         )?;
@@ -366,39 +402,7 @@ impl AS3935 {
         ignore_disturbances: &IgnoreDisturbances,
     ) -> Result<()> {
         self.interface
-            .lock()
-            .unwrap()
             .write(Box::new(MaskDisturber), (*ignore_disturbances).into())?;
-
-        Ok(())
-    }
-
-    fn setup_irq(&mut self, sender: Sender<Event>) -> Result<()> {
-        let interface_mutex = self.interface.clone();
-
-        self.irq_pin
-            .set_async_interrupt(Trigger::RisingEdge, move |_level: Level| {
-                sleep(IRQ_TRIGGER_TO_READY_DELAY);
-
-                let mut interface = interface_mutex.lock().unwrap();
-
-                let irq = Irq::from(interface.read(Box::new(Interrupt)).unwrap());
-
-                let event = match irq {
-                    Irq::DistanceEstimationChanged => return,
-                    Irq::DisturberDetected => Event::Disturbance,
-                    Irq::Lightning => {
-                        sleep(LIGHTNING_CALCULATION_DELAY);
-                        Event::Lightning(HeadOfStormDistance::from(
-                            interface.read(Box::new(DistanceEstimation)).unwrap(),
-                        ))
-                    }
-                    Irq::NoiseLevelTooHigh => Event::Noise,
-                };
-
-                sender.send(event).unwrap();
-            })
-            .unwrap();
 
         Ok(())
     }

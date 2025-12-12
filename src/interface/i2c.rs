@@ -1,6 +1,12 @@
 use crate::interface::Interface;
 use crate::interface::{calculate_bitshift, Result};
-use rppal::i2c::I2c;
+use embedded_hal::i2c::I2c;
+
+#[cfg(feature = "std")]
+use std::boxed::Box;
+
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
 
 pub const DEFAULT_I2C_ADDRESS: u8 = 0x03;
 
@@ -20,23 +26,33 @@ impl I2cAddress {
     }
 }
 
-pub(crate) struct I2cInterface {
-    i2c: I2c,
+pub(crate) struct I2cInterface<I2C> {
+    i2c: I2C,
+    address: u8,
 }
 
-impl I2cInterface {
-    pub(crate) fn new(mut i2c: I2c, i2c_address: I2cAddress) -> Result<Self> {
-        i2c.set_slave_address(i2c_address.into())?;
-
-        Ok(Self { i2c })
+impl<I2C> I2cInterface<I2C>
+where
+    I2C: I2c,
+{
+    pub(crate) fn new(i2c: I2C, i2c_address: I2cAddress) -> Result<Self> {
+        Ok(Self {
+            i2c,
+            address: i2c_address.0,
+        })
     }
 }
 
-impl Interface for I2cInterface {
+impl<I2C> Interface for I2cInterface<I2C>
+where
+    I2C: I2c + Send,
+{
     fn read(&mut self, register: Box<dyn crate::device::registers::Register>) -> Result<u8> {
         let mut data: [u8; 1] = [0];
 
-        self.i2c.write_read(&[register.address()], &mut data)?;
+        self.i2c
+            .write_read(self.address, &[register.address()], &mut data)
+            .map_err(|_| crate::interface::Error::I2c)?;
 
         let value = (data[0] & register.mask()) >> calculate_bitshift(register.mask());
         debug!("read {} = {:#b}", register.name(), value);
@@ -56,12 +72,18 @@ impl Interface for I2cInterface {
 
         let mut current_data: [u8; 1] = [0];
         self.i2c
-            .write_read(&[register.address()], &mut current_data)?;
+            .write_read(self.address, &[register.address()], &mut current_data)
+            .map_err(|_| crate::interface::Error::I2c)?;
 
-        self.i2c.write(&[
-            register.address(),
-            (current_data[0] ^ register.mask()) | (payload << bitshift),
-        ])?;
+        self.i2c
+            .write(
+                self.address,
+                &[
+                    register.address(),
+                    (current_data[0] ^ register.mask()) | (payload << bitshift),
+                ],
+            )
+            .map_err(|_| crate::interface::Error::I2c)?;
 
         Ok(())
     }
